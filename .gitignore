@@ -1,0 +1,27 @@
+# Build-Ergebnisse
+*.exe
+*.exe.config
+*.win32manifest
+
+# Exporte / Cache / Logs
+*.csv
+*.log
+cache.xml
+
+# Temporäre Dateien
+MailboxAccess-Launcher.ps1
+*.tmp
+*~
+
+# Editor / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# Release-Workflow (lokal)
+release-notes.md
+SHA256SUMS.txt
+
+# Archive
+*.zip

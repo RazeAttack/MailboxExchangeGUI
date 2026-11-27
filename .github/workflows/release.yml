@@ -1,0 +1,125 @@
+name: Release
+
+# Auslöser: Tag im Format v4.0.0 pushen
+#   git tag v4.0.0
+#   git push origin v4.0.0
+#
+# Signierung über SignPath (kostenlos für Open Source, Zertifikat von SignPath Foundation):
+#   Secret   SIGNPATH_API_TOKEN        (Repo -> Settings -> Secrets and variables -> Actions -> Secrets)
+#   Variable SIGNPATH_ORGANIZATION_ID  (... -> Variables)
+#   optional SIGNPATH_PROJECT_SLUG (Standard: MailboxAccess), SIGNPATH_POLICY_SLUG (Standard: release-signing)
+# Ohne Secret wird die EXE unsigniert veröffentlicht.
+on:
+  push:
+    tags: [ 'v*' ]
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  release:
+    name: EXE bauen, signieren, Release veröffentlichen
+    runs-on: windows-latest
+    env:
+      SIGNPATH_ENABLED: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Module installieren (ps2exe, PSScriptAnalyzer)
+        shell: powershell
+        run: |
+          [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+          if (-not (Get-PackageProvider -ListAvailable -Name NuGet -ErrorAction SilentlyContinue)) {
+              Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser | Out-Null
+          }
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module ps2exe, PSScriptAnalyzer -Scope CurrentUser -Force
+
+      - name: Prüfen (inkl. Version = Tag)
+        shell: powershell
+        run: .\build\Test-Project.ps1 -Analyzer -ExpectedVersion '${{ github.ref_name }}'
+
+      - name: Version bestimmen
+        id: ver
+        shell: powershell
+        run: |
+          $V = '${{ github.ref_name }}'.TrimStart('v', 'V')
+          $P = @($V.Split('.'))
+          while ($P.Count -lt 4) { $P += '0' }
+          $V4 = ($P | Select-Object -First 4) -join '.'
+          "version=$V"   | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "version4=$V4" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: EXE bauen
+        shell: powershell
+        run: .\Build-MailboxAccessExe.ps1 -SkipMerge -Version '${{ steps.ver.outputs.version4 }}'
+
+      - name: Unsignierte EXE hochladen (für SignPath)
+        if: env.SIGNPATH_ENABLED == 'true'
+        id: upload-unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: MailboxAccess-unsigned
+          path: MailboxAccess.exe
+          if-no-files-found: error
+
+      - name: Signieren mit SignPath (wartet auf manuelle Freigabe)
+        if: env.SIGNPATH_ENABLED == 'true'
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: '${{ secrets.SIGNPATH_API_TOKEN }}'
+          organization-id: '${{ vars.SIGNPATH_ORGANIZATION_ID }}'
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'MailboxAccess' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG || 'release-signing' }}
+          github-artifact-id: '${{ steps.upload-unsigned.outputs.artifact-id }}'
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: 'signed'
+          parameters: |
+            version: "${{ steps.ver.outputs.version4 }}"
+
+      - name: Signierte EXE übernehmen und prüfen
+        if: env.SIGNPATH_ENABLED == 'true'
+        shell: powershell
+        run: |
+          $Signed = Get-ChildItem .\signed -Recurse -Filter 'MailboxAccess.exe' | Select-Object -First 1
+          if (-not $Signed) { throw 'Signierte EXE nicht gefunden.' }
+          Copy-Item $Signed.FullName .\MailboxAccess.exe -Force
+          $Sig = Get-AuthenticodeSignature .\MailboxAccess.exe
+          "Status: $($Sig.Status)  Signer: $($Sig.SignerCertificate.Subject)"
+          if ($Sig.Status -ne 'Valid') { throw "Signatur ungültig: $($Sig.Status) $($Sig.StatusMessage)" }
+
+      - name: Release-Notes aus CHANGELOG.md
+        shell: powershell
+        run: |
+          $Ver  = '${{ steps.ver.outputs.version }}'
+          $Text = [IO.File]::ReadAllText("$PWD\CHANGELOG.md", [Text.Encoding]::UTF8) -replace "`r`n", "`n"
+          $M    = [regex]::Match($Text, "(?ms)^## \[$([regex]::Escape($Ver))\][^\n]*\n(.*?)(?=^## \[|\z)")
+          $Notes = if ($M.Success) { $M.Groups[1].Value.Trim() } else { "Release $Ver" }
+          $Notes += "`n`n---`n**Download:** ``MailboxAccess.exe`` (Starter mit eingebettetem Skript) oder ``Get-UserMailboxAccess.ps1``."
+          if ($env:SIGNPATH_ENABLED -eq 'true') {
+              $Notes += "`n`nFree code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org). See [Code signing policy](CODE_SIGNING_POLICY.md)."
+          }
+          [IO.File]::WriteAllText("$PWD\release-notes.md", $Notes, (New-Object Text.UTF8Encoding($false)))
+          Get-Content .\release-notes.md
+
+      - name: SHA256-Prüfsummen
+        shell: powershell
+        run: |
+          Get-FileHash .\MailboxAccess.exe, .\Get-UserMailboxAccess.ps1 -Algorithm SHA256 |
+              ForEach-Object { "{0}  {1}" -f $_.Hash.ToLower(), (Split-Path $_.Path -Leaf) } |
+              Set-Content .\SHA256SUMS.txt -Encoding ASCII
+          Get-Content .\SHA256SUMS.txt
+
+      - name: GitHub-Release erstellen
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create '${{ github.ref_name }}' `
+              .\MailboxAccess.exe .\Get-UserMailboxAccess.ps1 .\SHA256SUMS.txt `
+              --title 'MailboxAccess ${{ github.ref_name }}' `
+              --notes-file .\release-notes.md
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

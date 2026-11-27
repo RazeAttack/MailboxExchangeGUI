@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SignPath-Artefaktkonfiguration für MailboxAccess
+  Diese Datei ist eine Vorlage: In SignPath unter Projekt -> Artifact Configurations einfügen.
+  Das Artefakt ist das ZIP, das actions/upload-artifact aus MailboxAccess.exe erzeugt.
+  Der Parameter "version" kommt aus dem Release-Workflow (z. B. 4.0.0.0).
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <parameters>
+    <parameter name="version" required="true" />
+  </parameters>
+  <zip-file>
+    <pe-file path="MailboxAccess.exe" product-name="MailboxAccess" product-version="${version}">
+      <authenticode-sign/>
+    </pe-file>
+  </zip-file>
+</artifact-configuration>

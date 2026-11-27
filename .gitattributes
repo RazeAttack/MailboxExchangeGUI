@@ -1,0 +1,8 @@
+# PowerShell-Skripte: Windows-Zeilenenden, Kodierung (UTF-8 mit BOM) unverändert lassen
+*.ps1   text eol=crlf
+*.psm1  text eol=crlf
+*.psd1  text eol=crlf
+*.md    text eol=crlf
+*.yml   text eol=lf
+*.ico   binary
+*.png   binary
